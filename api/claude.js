@@ -2,6 +2,7 @@ module.exports = async function handler(req, res) {
 res.setHeader('Access-Control-Allow-Origin', '*');
 res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
 res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
 if (req.method === 'OPTIONS') return res.status(200).end();
 if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -11,15 +12,19 @@ const msgs = body.messages || [];
 const isChasseur = body.tools && body.tools.length > 0;
 
 if (isChasseur) {
+// ── AGENT 5 : CHASSEUR ──────────────────────────────────────────
 const userContent = msgs[0] ? msgs[0].content : '';
-const matchZones = userContent.match(/Zones\s*:\s*([^\n]+)/i);
-const zones = matchZones ? matchZones[1].trim() : 'Paris';
 
+// Extraire les zones depuis le message
+const matchZones = userContent.match(/Zones\s*:\s*\*\*([^\*]+)\*\*/i);
+const zones = matchZones ? matchZones[1].trim() : 'Paris 16e, Paris 15e, Paris 11e, Versailles';
+
+// Recherche Tavily
 const tRes = await fetch('https://api.tavily.com/search', {
 method: 'POST',
 headers: { 'Content-Type': 'application/json' },
 body: JSON.stringify({
-api_key: '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',
+api_key: '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',
 query: 'appartement renover ' + zones + ' vente prix euros',
 max_results: 10,
 search_depth: 'basic'
@@ -36,23 +41,20 @@ const title = r.title || '';
 const content = r.content || '';
 const combined = title + ' ' + content;
 
-// Extraire prix - chercher patterns comme "515 000 €" ou "515000€" ou "515 000 euros"
+// Extraire prix
 let prix = 0;
 const prixPatterns = [
-/(\d[\d\s]{2,8})\s*000\s*[€E]/i,
+/(\d[\d\s]{2,8})\s*000\s*€/i,
 /(\d{3,4})\s*000\s*euros/i,
-/prix\s*:?\s*(\d[\d\s]{2,8})\s*[€E]/i,
-/(\d[\d\s]{4,9})\s*[€E]/
+/prix\s*:\s*(\d[\d\s]{2,8})\s*€/i,
+/(\d\d\d[\d\s]{1,4})\s*€/i
 ];
 for (let p = 0; p < prixPatterns.length; p++) {
 const pm = combined.match(prixPatterns[p]);
 if (pm) {
 const raw = pm[1].replace(/\s/g, '');
 const val = parseInt(raw);
-if (val > 10000 && val < 50000000) {
-prix = val;
-break;
-}
+if (val > 10000 && val < 50000000) { prix = val; break; }
 }
 }
 
@@ -61,7 +63,7 @@ let surface = 0;
 const surfPatterns = [
 /(\d+[\.,]\d+)\s*m[²2]/i,
 /(\d+)\s*m[²2]/i,
-/surface\s*:?\s*(\d+)/i
+/surface\s*:\s*(\d+)/i
 ];
 for (let p = 0; p < surfPatterns.length; p++) {
 const sm = combined.match(surfPatterns[p]);
@@ -82,7 +84,6 @@ prix: prix,
 prix_m2: prix_m2,
 type: 'Appartement',
 description: content.substring(0, 200),
-
 lien: r.url || ''
 });
 }
@@ -92,105 +93,31 @@ content: [{ type: 'text', text: JSON.stringify({ annonces: annonces }) }]
 });
 
 } else {
+// ── AGENTS 1–4 : CLAUDE ─────────────────────────────────────────
 const groqMsgs = msgs.map(function(m) {
 return { role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) };
 });
 
-const gRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+const cRes = await fetch('https://api.anthropic.com/v1/messages', {
 method: 'POST',
 headers: {
 'Content-Type': 'application/json',
-'Authorization': 'Bearer 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'
+'x-api-key': process.env.ANTHROPIC_API_KEY,
+'anthropic-version': '2023-06-01'
 },
 body: JSON.stringify({
-model: 'llama-3.3-70b-versatile',
+model: 'claude-sonnet-4-6',
 max_tokens: body.max_tokens || 2000,
 messages: groqMsgs
 })
 });
 
-const gData = await gRes.json();
-const text = gData.choices && gData.choices[0] ? gData.choices[0].message.content : 'Erreur.';
-return res.status(200).json({ content: [{ type: 'text', text: text }] });
-}
-
-} catch (err) {
-return res.status(500).json({ error: err.message });
-}
-}
-
-Le dim. 14 juin 2026 à 21:05, PAULO GARCIA <pgarcia.immo@gmail.com> a écrit :
-module.exports = async function handler(req, res) {
-res.setHeader('Access-Control-Allow-Origin', '*');
-res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-if (req.method === 'OPTIONS') return res.status(200).end();
-if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
-try {
-const body = req.body;
-const msgs = body.messages || [];
-const isChasseur = body.tools && body.tools.length > 0;
-
-if (isChasseur) {
-const userContent = msgs[0] ? msgs[0].content : '';
-const match = userContent.match(/Zones\s*:\s*([^\n]+)/i);
-const zones = match ? match[1].trim() : 'Paris';
-
-const tRes = await fetch('https://api.tavily.com/search', {
-method: 'POST',
-headers: { 'Content-Type': 'application/json' },
-body: JSON.stringify({
-api_key: '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',
-query: 'appartement renover ' + zones + ' vente prix',
-max_results: 8,
-search_depth: 'basic'
-})
-});
-
-const tData = await tRes.json();
-const results = tData.results || [];
-const annonces = [];
-
-for (let i = 0; i < results.length; i++) {
-const r = results[i];
-annonces.push({
-adresse: (r.title || '').substring(0, 80),
-ville: zones.split(',')[0].trim(),
-surface: 0,
-prix: 0,
-prix_m2: 0,
-type: 'Appartement',
-description: (r.content || '').substring(0, 150),
-lien: r.url || ''
-});
-}
+const cData = await cRes.json();
+const text = cData.content && cData.content[0] ? cData.content[0].text : 'Erreur de génération';
 
 return res.status(200).json({
-content: [{ type: 'text', text: JSON.stringify({ annonces: annonces }) }]
+content: [{ type: 'text', text: text }]
 });
-
-} else {
-const groqMsgs = msgs.map(function(m) {
-return { role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) };
-});
-
-const gRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-method: 'POST',
-headers: {
-'Content-Type': 'application/json',
-'Authorization': 'Bearer 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'
-},
-body: JSON.stringify({
-model: 'llama-3.3-70b-versatile',
-max_tokens: body.max_tokens || 2000,
-messages: groqMsgs
-})
-});
-
-const gData = await gRes.json();
-const text = gData.choices && gData.choices[0] ? gData.choices[0].message.content : 'Erreur.';
-return res.status(200).json({ content: [{ type: 'text', text: text }] });
 }
 
 } catch (err) {
