@@ -91,4 +91,3 @@ return res.status(200).json({
 content: [{ type: 'text', text: '{"annonces":[],"debug":"Exception: ' + error.message + '"}' }]
 });
 }
-}
