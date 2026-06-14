@@ -12,22 +12,18 @@ const msgs = body.messages || [];
 const isChasseur = body.tools && body.tools.length > 0;
 
 if (isChasseur) {
-// ── AGENT 5 : CHASSEUR ──────────────────────────────────────────
 const userContent = msgs[0] ? msgs[0].content : '';
-
-// Extraire les zones depuis le message
 const matchZones = userContent.match(/Zones\s*:\s*\*\*([^\*]+)\*\*/i);
 const zones = matchZones ? matchZones[1].trim() : 'Paris 16e, Paris 15e, Paris 11e, Versailles';
 
-// Recherche Tavily
 const tRes = await fetch('https://api.tavily.com/search', {
 method: 'POST',
 headers: { 'Content-Type': 'application/json' },
 body: JSON.stringify({
-api_key: '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',
+api_key: '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',
 query: 'appartement renover ' + zones + ' vente prix euros',
 max_results: 10,
-search_depth: 'basic'
+search_depth: 'advanced'
 })
 });
 
@@ -41,40 +37,48 @@ const title = r.title || '';
 const content = r.content || '';
 const combined = title + ' ' + content;
 
-// Extraire prix
+// Extraire prix — cherche "515 000 €" ou "515000€" ou "515 000 euros"
 let prix = 0;
-const prixPatterns = [
-/(\d[\d\s]{2,8})\s*000\s*€/i,
-/(\d{3,4})\s*000\s*euros/i,
-/prix\s*:\s*(\d[\d\s]{2,8})\s*€/i,
-/(\d\d\d[\d\s]{1,4})\s*€/i
-];
-for (let p = 0; p < prixPatterns.length; p++) {
-const pm = combined.match(prixPatterns[p]);
-if (pm) {
-const raw = pm[1].replace(/\s/g, '');
-const val = parseInt(raw);
-if (val > 10000 && val < 50000000) { prix = val; break; }
+const prixRegex = /(\d{1,3}(?:[\s\u00a0]\d{3})*|\d+)\s*(?:€|euros)/gi;
+let m;
+while ((m = prixRegex.exec(combined)) !== null) {
+const raw = m[1].replace(/[\s\u00a0]/g, '');
+const val = parseInt(raw, 10);
+if (val >= 50000 && val <= 50000000) {
+prix = val;
+break;
 }
 }
 
-// Extraire surface
+// Extraire surface — cherche "88,70m2" ou "88 m²" ou "85m²"
 let surface = 0;
-const surfPatterns = [
-/(\d+[\.,]\d+)\s*m[²2]/i,
-/(\d+)\s*m[²2]/i,
-/surface\s*:\s*(\d+)/i
-];
-for (let p = 0; p < surfPatterns.length; p++) {
-const sm = combined.match(surfPatterns[p]);
-if (sm) {
-surface = parseFloat(sm[1].replace(',', '.'));
-if (surface > 5 && surface < 2000) break;
-else surface = 0;
+const surfRegex = /(\d{1,4}(?:[,\.]\d{1,2})?)\s*m[²2²]/gi;
+let sm;
+while ((sm = surfRegex.exec(combined)) !== null) {
+const val = parseFloat(sm[1].replace(',', '.'));
+if (val >= 10 && val <= 1000) {
+surface = val;
+break;
 }
 }
 
-const prix_m2 = (prix > 0 && surface > 0) ? Math.round(prix / surface) : 0;
+// Extraire prix/m² directement si présent — cherche "(7 254 €/m²)"
+let prix_m2 = 0;
+const pm2Regex = /(\d{1,3}(?:[\s\u00a0]\d{3})*|\d+)\s*€\s*\/\s*m[²2]/gi;
+let pm;
+while ((pm = pm2Regex.exec(combined)) !== null) {
+const raw = pm[1].replace(/[\s\u00a0]/g, '');
+const val = parseInt(raw, 10);
+if (val >= 1000 && val <= 50000) {
+prix_m2 = val;
+break;
+}
+}
+
+// Calculer prix_m2 si pas trouvé directement
+if (prix_m2 === 0 && prix > 0 && surface > 0) {
+prix_m2 = Math.round(prix / surface);
+}
 
 annonces.push({
 adresse: title.substring(0, 80),
@@ -93,7 +97,6 @@ content: [{ type: 'text', text: JSON.stringify({ annonces: annonces }) }]
 });
 
 } else {
-// ── AGENTS 1–4 : CLAUDE ─────────────────────────────────────────
 const groqMsgs = msgs.map(function(m) {
 return { role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) };
 });
@@ -123,4 +126,4 @@ content: [{ type: 'text', text: text }]
 } catch (err) {
 return res.status(500).json({ error: err.message });
 }
-}
+};
