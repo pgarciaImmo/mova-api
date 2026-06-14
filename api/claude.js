@@ -37,45 +37,37 @@ const title = r.title || '';
 const content = r.content || '';
 const combined = title + ' ' + content;
 
-// Extraire prix — cherche "515 000 €" ou "515000€" ou "515 000 euros"
-let prix = 0;
-const prixRegex = /(\d{1,3}(?:[\s\u00a0]\d{3})*|\d+)\s*(?:€|euros)/gi;
-let m;
-while ((m = prixRegex.exec(combined)) !== null) {
-const raw = m[1].replace(/[\s\u00a0]/g, '');
-const val = parseInt(raw, 10);
-if (val >= 50000 && val <= 50000000) {
-prix = val;
-break;
-}
-}
-
-// Extraire surface — cherche "88,70m2" ou "88 m²" ou "85m²"
-let surface = 0;
-const surfRegex = /(\d{1,4}(?:[,\.]\d{1,2})?)\s*m[²2²]/gi;
-let sm;
-while ((sm = surfRegex.exec(combined)) !== null) {
-const val = parseFloat(sm[1].replace(',', '.'));
-if (val >= 10 && val <= 1000) {
-surface = val;
-break;
-}
-}
-
-// Extraire prix/m² directement si présent — cherche "(7 254 €/m²)"
+// Extraire prix/m² EN PREMIER (plus fiable car format distinct)
 let prix_m2 = 0;
 const pm2Regex = /(\d{1,3}(?:[\s\u00a0]\d{3})*|\d+)\s*€\s*\/\s*m[²2]/gi;
 let pm;
 while ((pm = pm2Regex.exec(combined)) !== null) {
-const raw = pm[1].replace(/[\s\u00a0]/g, '');
-const val = parseInt(raw, 10);
-if (val >= 1000 && val <= 50000) {
-prix_m2 = val;
-break;
-}
+const val = parseInt(pm[1].replace(/[\s\u00a0]/g, ''), 10);
+if (val >= 1000 && val <= 50000) { prix_m2 = val; break; }
 }
 
-// Calculer prix_m2 si pas trouvé directement
+// Extraire surface
+let surface = 0;
+const surfRegex = /(\d{1,4}(?:[,\.]\d{1,2})?)\s*m[²2]/gi;
+let sm;
+while ((sm = surfRegex.exec(combined)) !== null) {
+const val = parseFloat(sm[1].replace(',', '.'));
+if (val >= 10 && val <= 1000) { surface = val; break; }
+}
+
+// Extraire prix total
+let prix = 0;
+const prixRegex = /(\d{1,3}(?:[\s\u00a0]\d{3})+)\s*€(?!\s*\/)/gi;
+let m2;
+while ((m2 = prixRegex.exec(combined)) !== null) {
+const val = parseInt(m2[1].replace(/[\s\u00a0]/g, ''), 10);
+if (val >= 50000 && val <= 50000000) { prix = val; break; }
+}
+
+// Déductions croisées
+if (prix === 0 && prix_m2 > 0 && surface > 0) {
+prix = Math.round(prix_m2 * surface);
+}
 if (prix_m2 === 0 && prix > 0 && surface > 0) {
 prix_m2 = Math.round(prix / surface);
 }
