@@ -21,19 +21,15 @@ module.exports = async function handler(req, res) {
 
       const TAVILY_KEY = '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';
 
-      const kwRenovation = 'rénover OR travaux OR succession OR liquidation OR rafraîchir OR restructurer OR squatté';
-      const kwAtypique = 'atypique OR loft OR duplex OR hôtel OR commercialité OR immeuble OR bureau OR atelier OR Haussmannien';
+      const PORTALS = ['seloger.com', 'leboncoin.fr', 'pap.fr', 'bienici.com'];
 
       const zones = zonesRaw.split(',').map(function(z) { return z.trim(); });
-      const zone1 = zones[0];
-      const zone2 = zones[1] || zones[0];
 
-      const queries = [
-        zone1 + ' appartement vente achat annonce ' + kwRenovation,
-        zone1 + ' vente achat annonce ' + kwAtypique,
-        zone2 + ' appartement vente achat annonce ' + kwRenovation,
-        zone1 + ' local commercial bureau immeuble vente achat annonce prix euros'
-      ];
+      const queries = [];
+      zones.forEach(function(zone) {
+        queries.push(zone + ' appartement vente travaux rénover');
+        queries.push(zone + ' immeuble local commercial bureau vente');
+      });
 
       const allResults = [];
 
@@ -45,8 +41,9 @@ module.exports = async function handler(req, res) {
             body: JSON.stringify({
               api_key: TAVILY_KEY,
               query: queries[q],
-              max_results: 5,
-              search_depth: 'advanced'
+              max_results: 7,
+              search_depth: 'advanced',
+              include_domains: PORTALS
             })
           });
           const tData = await tRes.json();
@@ -59,7 +56,7 @@ module.exports = async function handler(req, res) {
         const papRss = await fetch('https://www.pap.fr/rss/annonces-ventes-immobilieres.rss?geo=r159&type=appartement');
         const papText = await papRss.text();
         const items = papText.match(/<item>([\s\S]*?)<\/item>/g) || [];
-        items.slice(0, 6).forEach(function(item) {
+        items.slice(0, 8).forEach(function(item) {
           const title = (item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) || [])[1] || '';
           const link = (item.match(/<link>(.*?)<\/link>/) || [])[1] || '';
           const desc = (item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/) || [])[1] || '';
@@ -75,37 +72,53 @@ module.exports = async function handler(req, res) {
         return true;
       });
 
-      // Fonction pour extraire TOUS les prix d'un texte
-      function extractAllPrices(text) {
-        var prices = [];
+      // Extraction prix : uniquement valeurs entre 50 000 et 50 000 000
+      // On exclut les séquences de plus de 8 chiffres (numéros de référence)
+      function extractPrice(text) {
+        // Pattern : nombre formaté avec espaces/points comme séparateurs de milliers
+        // On cible spécifiquement les formats prix immobilier FR
         var patterns = [
-          /(\d{1,3}(?:[\s\u00a0]\d{3})+)\s*€/gi,
-          /(\d{1,3}(?:[\s\u00a0]\d{3})+)\s*euros?/gi,
-          /(\d{6,8})€/gi,
-          /(\d{1,3}(?:\.\d{3})+)\s*€/gi,
-          /prix\s*:?\s*(\d{5,8})/gi
+          // "840 000 €" ou "840 000€"
+          /\b(\d{1,3}(?:[\s\u00a0]\d{3}){1,2})\s*€/g,
+          // "840000€" (collé, max 8 chiffres)
+          /\b(\d{5,8})€/g,
+          // "840.000 €"
+          /\b(\d{1,3}(?:\.\d{3}){1,2})\s*€/g,
+          // "prix : 840000"
+          /prix\s*:?\s*(\d{5,8})\b/gi,
         ];
         for (var p = 0; p < patterns.length; p++) {
           var m;
           patterns[p].lastIndex = 0;
           while ((m = patterns[p].exec(text)) !== null) {
-            var val = parseInt(m[1].replace(/[\s\u00a0\.]/g, ''), 10);
-            if (val >= 50000) prices.push(val);
+            var raw = m[1].replace(/[\s\u00a0\.]/g, '');
+            // Rejeter si plus de 8 chiffres (= numéro de référence)
+            if (raw.length > 8) continue;
+            var val = parseInt(raw, 10);
+            if (val >= 50000 && val <= 50000000) return val;
           }
         }
-        return prices;
+        return 0;
       }
 
-      // Fonction pour extraire TOUTES les surfaces
-      function extractAllSurfaces(text, min) {
-        var surfaces = [];
+      function extractSurface(text, min) {
         var regex = /(\d{1,4}(?:[,\.]\d{1,2})?)\s*m[²2]/gi;
         var m;
         while ((m = regex.exec(text)) !== null) {
           var val = parseFloat(m[1].replace(',', '.'));
-          if (val >= min && val <= 5000) surfaces.push(val);
+          if (val >= min && val <= 5000) return val;
         }
-        return surfaces;
+        return 0;
+      }
+
+      function extractPrixM2(text) {
+        var regex = /(\d{1,3}(?:[\s\u00a0]\d{3})?|\d{4,6})\s*[€e]\s*\/\s*m[²2]/gi;
+        var m;
+        while ((m = regex.exec(text)) !== null) {
+          var val = parseInt(m[1].replace(/[\s\u00a0]/g, ''), 10);
+          if (val >= 1000 && val <= 50000) return val;
+        }
+        return 0;
       }
 
       var annonces = [];
@@ -116,75 +129,52 @@ module.exports = async function handler(req, res) {
         var content = r.content || '';
         var url = r.url || '';
         var urlLower = url.toLowerCase();
-        var titleLower = title.toLowerCase();
         var combinedLower = (title + ' ' + content).toLowerCase();
 
-        // EXCLURE domaines non pertinents
-        var excludedDomains = ['cbre.fr', 'jll.fr', 'bnpparibas-realestate.com', 'valuo.fr', 'youtube.com', 'youtu.be'];
-        if (excludedDomains.some(function(d) { return urlLower.includes(d); })) continue;
+        // Vérifier que l'URL vient bien d'un portail immobilier
+        var isPortal = PORTALS.some(function(d) { return urlLower.includes(d); });
+        if (!isPortal) continue;
 
-        // EXCLURE titres en anglais ou formations
-        if (titleLower.includes('formation') || titleLower.includes('comment devenir')) continue;
+        // Exclure location pure
+        if ((urlLower.includes('/location') || combinedLower.startsWith('louer ')) && !urlLower.includes('vente')) continue;
 
-        // EXCLURE location pure
-        if ((urlLower.includes('/location') || titleLower.startsWith('louer ') || titleLower.startsWith('location ')) && !urlLower.includes('vente') && !titleLower.includes('vente') && !titleLower.includes('achat')) continue;
+        // Exclure contenu non-annonce (guides, articles)
+        if (combinedLower.includes('überspringen')) continue;
+        if (title.toLowerCase().includes('guide') || title.toLowerCase().includes('comment ')) continue;
 
-        // Extraire prix depuis le TITRE en priorité, puis le début du content
-        var titlePrices = extractAllPrices(title);
-        var contentPrices = extractAllPrices(content.substring(0, 300)); // Seulement les 300 premiers caractères
-        
-        // Prendre le prix du titre si disponible, sinon premier prix du début du content
-        var prix = 0;
-        if (titlePrices.length > 0) {
-          prix = titlePrices[0];
-        } else if (contentPrices.length > 0) {
-          prix = contentPrices[0];
-        }
-
-        // Extraire surface depuis le titre en priorité
-        var titleSurfaces = extractAllSurfaces(title, surfMin);
-        var contentSurfaces = extractAllSurfaces(content.substring(0, 300), surfMin);
-        var surface = titleSurfaces.length > 0 ? titleSurfaces[0] : (contentSurfaces.length > 0 ? contentSurfaces[0] : 0);
-
-        // Prix au m²
-        var prix_m2 = 0;
-        var pm2Regex = /(\d{1,3}(?:[\s\u00a0]\d{3})*|\d{4,6})\s*[€e]\s*\/\s*m[²2]/gi;
-        var pm;
-        var combined300 = title + ' ' + content.substring(0, 300);
-        while ((pm = pm2Regex.exec(combined300)) !== null) {
-          var val = parseInt(pm[1].replace(/[\s\u00a0]/g, ''), 10);
-          if (val >= 1000 && val <= 50000) { prix_m2 = val; break; }
-        }
+        // Extraction
+        var fullText = title + ' ' + content;
+        var prix = extractPrice(title) || extractPrice(content.substring(0, 500));
+        var surface = extractSurface(title, surfMin) || extractSurface(content.substring(0, 500), surfMin);
+        var prix_m2 = extractPrixM2(fullText);
 
         // Déductions croisées
         if (prix === 0 && prix_m2 > 0 && surface > 0) prix = Math.round(prix_m2 * surface);
         if (prix_m2 === 0 && prix > 0 && surface > 0) prix_m2 = Math.round(prix / surface);
+
+        // Valider prix/m² cohérent (Paris : 3000 à 30000)
+        if (prix_m2 > 30000) prix_m2 = 0;
+        if (prix_m2 > 0 && prix > 0 && (prix / prix_m2) < 5) { prix = 0; prix_m2 = 0; } // incohérent
 
         // Source
         var source = 'Web';
         if (urlLower.includes('seloger.com')) source = 'SeLoger';
         else if (urlLower.includes('leboncoin.fr')) source = 'LeBonCoin';
         else if (urlLower.includes('pap.fr')) source = 'PAP';
-        else if (urlLower.includes('notaires.fr')) source = 'Notaires';
         else if (urlLower.includes('bienici.com')) source = 'Bienici';
-        else if (urlLower.includes('logic-immo.com')) source = 'Logic-Immo';
-        else if (urlLower.includes('etreproprio.com')) source = 'EtreProprio';
-        else if (urlLower.includes('bureauxlocaux.com')) source = 'BureauxLocaux';
-        else if (urlLower.includes('superimmo.com')) source = 'SuperImmo';
 
         // Type
         var type = 'Appartement';
         if (combinedLower.includes('immeuble entier') || combinedLower.includes('immeuble de rapport')) type = 'Immeuble';
         else if (combinedLower.includes('bureau')) type = 'Bureau';
-        else if (combinedLower.includes('commerce') || combinedLower.includes('boutique') || combinedLower.includes('local commercial')) type = 'Commerce';
-        else if (combinedLower.includes('atelier') || combinedLower.includes('entrepôt')) type = 'Industriel';
+        else if (combinedLower.includes('commerce') || combinedLower.includes('local commercial')) type = 'Commerce';
         else if (combinedLower.includes('maison') || combinedLower.includes('pavillon')) type = 'Maison';
-        else if (combinedLower.includes('hôtel') && !combinedLower.includes('hôtel particulier')) type = 'Hôtel';
         else if (combinedLower.includes('loft') || combinedLower.includes('duplex') || combinedLower.includes('triplex')) type = 'Atypique';
+        else if (combinedLower.includes('hôtel') && !combinedLower.includes('hôtel particulier')) type = 'Hôtel';
 
         annonces.push({
           adresse: title.substring(0, 80),
-          ville: zone1,
+          ville: zones[0],
           surface: surface > 0 ? Math.round(surface) : null,
           prix: prix > 0 ? prix : null,
           prix_m2: prix_m2 > 0 ? prix_m2 : null,
