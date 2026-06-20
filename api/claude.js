@@ -22,23 +22,23 @@ module.exports = async function handler(req, res) {
       const TAVILY_KEY = process.env.TAVILY_API_KEY;
 
       // Mots-clés de décote : présents dans TOUTES les requêtes, peu importe le type de bien.
-      // Avant, ce signal n'était utilisé qu'une requête sur deux (alterné avec kwAtypique),
-      // ce qui veut dire que la requête "maison" ne cherchait JAMAIS "rénover/succession/..."
-      // et que la requête "atypique" pouvait remonter des biens déjà rénovés et chers sans
-      // aucun filtre de décote — contraire à l'objectif (Paulo n'achète que pour marge).
-      const kwRenovation = 'rénover OR travaux OR succession OR liquidation OR rafraîchir OR restructurer OR squatté OR vétusté OR indivision OR mutation';
-      // Mots-clés de type de bien atypique/commercial : utilisés UNIQUEMENT pour élargir le type
-      // de bien recherché, jamais comme substitut au signal de décote ci-dessus.
-      const kwAtypiqueType = 'atypique OR loft OR duplex OR hôtel OR commercialité OR Haussmannien OR atelier';
+      // Resserré à 5 mots-clés (au lieu de 10) : une requête Tavily trop chargée en "OR" dilue
+      // le poids du mot-clé principal (ex: "maison") et le moteur favorise des pages génériques
+      // qui matchent vaguement plusieurs termes plutôt que des résultats strictement "maison".
+      // On garde les signaux de décote les plus forts (succession/squat/vétusté = vraie urgence),
+      // pas les signaux faibles (mutation, indivision) qui ajoutaient du bruit sans valeur ajoutée.
+      const kwRenovation = 'rénover OR succession OR liquidation OR squatté OR vétusté';
 
       const zones = zonesRaw.split(',').map(function(z) { return z.trim(); }).filter(Boolean);
       const zone1 = zones[0] || 'Paris 16e';
 
       // Pour chaque zone demandée, on lance 3 requêtes (appartement / maison / bien commercial).
-      // CHAQUE requête combine désormais type de bien ET signal de décote (kwRenovation),
-      // pour ne jamais remonter un bien déjà rénové et donc sans marge possible.
+      // CHAQUE requête combine type de bien ET signal de décote (kwRenovation).
+      // "atypique/loft/duplex/hôtel" retiré : Paulo ne recherche pas ces typologies en soi,
+      // seulement des biens fortement décotés (succession, squat, état dégradé), donc ces
+      // mots-clés ne faisaient que diluer la requête sans bénéfice pour son usage réel.
       const bienTerms = [
-        'appartement OR ' + kwAtypiqueType,
+        'appartement',
         'maison',
         'bureau OR local commercial OR commerce OR entrepôt OR immeuble'
       ];
