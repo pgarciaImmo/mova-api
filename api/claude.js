@@ -21,13 +21,10 @@ module.exports = async function handler(req, res) {
 
       const TAVILY_KEY = process.env.TAVILY_API_KEY;
 
-      // Mots-clés de décote : présents dans TOUTES les requêtes, peu importe le type de bien.
-      // Resserré à 5 mots-clés (au lieu de 10) : une requête Tavily trop chargée en "OR" dilue
-      // le poids du mot-clé principal (ex: "maison") et le moteur favorise des pages génériques
-      // qui matchent vaguement plusieurs termes plutôt que des résultats strictement "maison".
-      // On garde les signaux de décote les plus forts (succession/squat/vétusté = vraie urgence),
-      // pas les signaux faibles (mutation, indivision) qui ajoutaient du bruit sans valeur ajoutée.
-      const kwRenovation = 'rénover OR succession OR liquidation OR squatté OR vétusté';
+      // Mots-clés de décote SECONDAIRES : combinés au format "[type] à rénover [ville]" déjà
+      // présent dans la requête (donc "rénover" n'est pas répété ici pour éviter la redondance).
+      // Ces mots-clés élargissent vers d'autres signaux de décote forte (succession, squat...).
+      const kwRenovation = 'OR succession OR liquidation OR squatté OR vétusté';
 
       const zones = zonesRaw.split(',').map(function(z) { return z.trim(); }).filter(Boolean);
       const zone1 = zones[0] || 'Paris 16e';
@@ -37,6 +34,11 @@ module.exports = async function handler(req, res) {
       // "atypique/loft/duplex/hôtel" retiré : Paulo ne recherche pas ces typologies en soi,
       // seulement des biens fortement décotés (succession, squat, état dégradé), donc ces
       // mots-clés ne faisaient que diluer la requête sans bénéfice pour son usage réel.
+      // Format de requête repensé : "[type] à rénover [ville]" — calque la façon dont une
+      // vraie recherche humaine ("maison à rénover Versailles") trouve facilement des pages
+      // comme "34 annonces Maisons à rénover Versailles" sur SeLoger. L'ancien format
+      // ("Versailles maison vente achat annonce rénover OR succession OR...") était trop
+      // éloigné d'une requête naturelle, ce qui semble pénaliser le classement chez Tavily.
       const bienTerms = [
         'appartement',
         'maison',
@@ -46,7 +48,7 @@ module.exports = async function handler(req, res) {
       const queryZones = [];
       for (let zi = 0; zi < zones.length; zi++) {
         for (let bi = 0; bi < bienTerms.length; bi++) {
-          queries.push(zones[zi] + ' ' + bienTerms[bi] + ' vente achat annonce ' + kwRenovation);
+          queries.push(bienTerms[bi] + ' à rénover ' + zones[zi] + ' ' + kwRenovation);
           queryZones.push(zones[zi]);
         }
       }
@@ -204,8 +206,12 @@ module.exports = async function handler(req, res) {
         const titleLower = title.toLowerCase();
         const urlLower = url.toLowerCase();
 
-        // EXCLURE domaines non pertinents
-        const excludedDomains = ['cbre.fr', 'jll.fr', 'bnpparibas-realestate.com', 'valuo.fr', 'youtube.com', 'youtu.be'];
+        // EXCLURE domaines non pertinents.
+        // zilek.com et mitula.fr ajoutés : ces agrégateurs regroupent plusieurs communes
+        // voisines sous l'intitulé d'une seule ville (ex: "arrondissement Versailles" incluait
+        // en réalité Bois-d'Arcy, Trappes, Plaisir...), faussant systématiquement la ville
+        // affichée. Plus de bruit que de valeur ajoutée pour ces deux sources.
+        const excludedDomains = ['cbre.fr', 'jll.fr', 'bnpparibas-realestate.com', 'valuo.fr', 'youtube.com', 'youtu.be', 'zilek.com', 'mitula.fr'];
         if (excludedDomains.some(function(d) { return urlLower.includes(d); })) continue;
         if (rawContent.includes('Navigation überspringen')) continue;
         if (titleLower.includes('formation') || titleLower.includes('comment devenir')) continue;
@@ -399,6 +405,15 @@ module.exports = async function handler(req, res) {
               !/[a-zàâäéèêëïîôùûüç]{5,}/i.test(adresseGuess);
             if (looksLikeNoise) adresseGuess = r._zone || zone1;
           }
+
+          // Filtre anti-location au niveau de CETTE annonce précise, pas seulement au niveau
+          // de la page entière (déjà fait plus haut). Une page peut mélanger vente et location
+          // (ex: page "Locaux commerciaux à Versailles" qui liste aussi du "Loyer : 3 250€/mois"),
+          // donc le filtre de page ne suffit pas à exclure les annonces de location individuelles.
+          const beforeWindowLower = typeWindow.toLowerCase();
+          const isLocationSegment = /\bloyer\b/i.test(beforeWindowLower) ||
+            (/\blocation\b/i.test(beforeWindowLower) && !/\bvente\b/i.test(beforeWindowLower));
+          if (isLocationSegment) continue;
 
           annonces.push({
             adresse: adresseGuess.substring(0, 80),
