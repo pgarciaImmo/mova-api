@@ -36,6 +36,7 @@ module.exports = async function handler(req, res) {
       ];
 
       const allResults = [];
+      const debugQueryErrors = [];
 
       for (let q = 0; q < queries.length; q++) {
         try {
@@ -52,7 +53,10 @@ module.exports = async function handler(req, res) {
           });
           const tData = await tRes.json();
           if (tData.results) allResults.push(...tData.results);
-        } catch (e) {}
+          else debugQueryErrors.push({ query: queries[q], response: tData });
+        } catch (e) {
+          debugQueryErrors.push({ query: queries[q], error: e.message });
+        }
       }
 
       // PAP RSS (déjà annonces individuelles, pas besoin de raw_content)
@@ -110,6 +114,18 @@ module.exports = async function handler(req, res) {
         /href=["']([^"']*bienici\.com\/annonce[^"']*)["']/gi,
         /href=["']([^"']*logic-immo\.com\/[^"']*ad\d+[^"']*)["']/gi
       ];
+
+      // DEBUG: capture la forme brute des 2 premiers résultats pour diagnostic
+      const debugSamples = allResults.slice(0, 2).map(function(r) {
+        return {
+          url: r.url || '',
+          title: r.title || '',
+          raw_content_length: (r.raw_content || '').length,
+          raw_content_sample: (r.raw_content || r.content || '').substring(0, 800),
+          has_href_tags: /href=/i.test(r.raw_content || ''),
+          has_html_tags: /<[a-z]+[\s>]/i.test(r.raw_content || '')
+        };
+      });
 
       for (let i = 0; i < allResults.length; i++) {
         const r = allResults[i];
@@ -235,7 +251,17 @@ module.exports = async function handler(req, res) {
       }
 
       return res.status(200).json({
-        content: [{ type: 'text', text: JSON.stringify({ annonces: annonces }) }]
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            annonces: annonces,
+            _debug: {
+              total_results_fetched: allResults.length,
+              query_errors: debugQueryErrors,
+              samples: debugSamples
+            }
+          })
+        }]
       });
 
     } else {
