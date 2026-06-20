@@ -24,16 +24,16 @@ module.exports = async function handler(req, res) {
       const kwRenovation = 'rénover OR travaux OR succession OR liquidation OR rafraîchir OR restructurer OR squatté';
       const kwAtypique = 'atypique OR loft OR duplex OR hôtel OR commercialité OR immeuble OR bureau OR atelier OR Haussmannien';
 
-      const zones = zonesRaw.split(',').map(function(z) { return z.trim(); });
-      const zone1 = zones[0];
-      const zone2 = zones[1] || zones[0];
+      const zones = zonesRaw.split(',').map(function(z) { return z.trim(); }).filter(Boolean);
+      const zone1 = zones[0] || 'Paris 16e';
 
-      // Requêtes réduites à 3 pour limiter le volume de raw_content (perf/mémoire)
-      const queries = [
-        zone1 + ' appartement vente achat annonce ' + kwRenovation,
-        zone1 + ' vente achat annonce ' + kwAtypique,
-        zone2 + ' appartement vente achat annonce ' + kwRenovation
-      ];
+      // Une requête par zone demandée (alterne rénovation/atypique pour varier les résultats),
+      // au lieu de toujours cibler seulement les 2 premières zones.
+      const queries = [];
+      for (let zi = 0; zi < zones.length; zi++) {
+        const kw = (zi % 2 === 0) ? kwRenovation : kwAtypique;
+        queries.push(zones[zi] + ' appartement vente achat annonce ' + kw);
+      }
 
       const allResults = [];
 
