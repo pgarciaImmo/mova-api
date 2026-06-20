@@ -21,21 +21,19 @@ module.exports = async function handler(req, res) {
 
       const TAVILY_KEY = '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';
 
-      const kwRenovation = 'rénover OR travaux OR succession OR liquidation OR rafraîchir OR restructurer OR squatté OR vétusté OR indivision OR mutation';
-      const kwAtypique = 'atypique OR loft OR duplex OR hôtel OR commercialité OR immeuble OR bureau OR atelier OR Haussmannien OR entrepôt OR commerce OR mur commercial OR local commercial';
+      const kwRenovation = 'rénover OR travaux OR succession OR liquidation OR rafraîchir OR restructurer OR squatté';
+      const kwAtypique = 'atypique OR loft OR duplex OR hôtel OR commercialité OR immeuble OR bureau OR atelier OR Haussmannien';
 
-      const zones = zonesRaw.split(',').map(function(z) { return z.trim(); }).filter(Boolean);
-      const zone1 = zones[0] || 'Paris 16e';
+      const zones = zonesRaw.split(',').map(function(z) { return z.trim(); });
+      const zone1 = zones[0];
+      const zone2 = zones[1] || zones[0];
 
-      // Une requête par zone demandée (alterne rénovation/atypique pour varier les résultats),
-      // au lieu de toujours cibler seulement les 2 premières zones.
-      const queries = [];
-      const queryZones = [];
-      for (let zi = 0; zi < zones.length; zi++) {
-        const kw = (zi % 2 === 0) ? kwRenovation : kwAtypique;
-        queries.push(zones[zi] + ' appartement vente achat annonce ' + kw);
-        queryZones.push(zones[zi]);
-      }
+      // Requêtes réduites à 3 pour limiter le volume de raw_content (perf/mémoire)
+      const queries = [
+        zone1 + ' appartement vente achat annonce ' + kwRenovation,
+        zone1 + ' vente achat annonce ' + kwAtypique,
+        zone2 + ' appartement vente achat annonce ' + kwRenovation
+      ];
 
       const allResults = [];
 
@@ -53,10 +51,7 @@ module.exports = async function handler(req, res) {
             })
           });
           const tData = await tRes.json();
-          if (tData.results) {
-            tData.results.forEach(function(r) { r._zone = queryZones[q]; });
-            allResults.push(...tData.results);
-          }
+          if (tData.results) allResults.push(...tData.results);
         } catch (e) {}
       }
 
@@ -69,7 +64,7 @@ module.exports = async function handler(req, res) {
           const title = (item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) || [])[1] || '';
           const link = (item.match(/<link>(.*?)<\/link>/) || [])[1] || '';
           const desc = (item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/) || [])[1] || '';
-          if (title && link) allResults.push({ title: title, url: link, content: desc, isIndividual: true, _zone: zone1 });
+          if (title && link) allResults.push({ title: title, url: link, content: desc, isIndividual: true });
         });
       } catch (e) {}
 
@@ -108,34 +103,13 @@ module.exports = async function handler(req, res) {
       const annonces = [];
       const seenUrls = {};
 
-      // Trouve TOUTES les occurrences de prix dans un texte (HTML ou texte nettoyé, peu importe)
-      function findAllPrices(text) {
-        const patterns = [
-          /(\d{1,3}(?:[\s\u00a0]\d{3})+)\s*€/g,
-          /(\d{1,3}(?:\.\d{3})+)\s*€/g,
-          /([1-9]\d{5,7})\s*€/g
-        ];
-        const found = [];
-        for (let p = 0; p < patterns.length; p++) {
-          let m;
-          patterns[p].lastIndex = 0;
-          while ((m = patterns[p].exec(text)) !== null) {
-            const val = parseInt(m[1].replace(/[\s\u00a0\.]/g, ''), 10);
-            if (val >= 50000 && val <= 100000000) {
-              found.push({ value: val, index: m.index, length: m[0].length });
-            }
-          }
-        }
-        // Dédupliquer par position approximative (évite double-comptage entre patterns)
-        found.sort(function(a, b) { return a.index - b.index; });
-        const dedup = [];
-        for (let i = 0; i < found.length; i++) {
-          if (dedup.length === 0 || found[i].index - dedup[dedup.length - 1].index > 5) {
-            dedup.push(found[i]);
-          }
-        }
-        return dedup;
-      }
+      // PATTERNS pour détecter des liens d'annonces individuelles dans le HTML brut
+      const annoncePatterns = [
+        /href=["']([^"']*seloger\.com\/annonces\/\d+[^"']*)["']/gi,
+        /href=["']([^"']*leboncoin\.fr\/[^"']*ventes_immobilieres\/\d+[^"']*)["']/gi,
+        /href=["']([^"']*bienici\.com\/annonce[^"']*)["']/gi,
+        /href=["']([^"']*logic-immo\.com\/[^"']*ad\d+[^"']*)["']/gi
+      ];
 
       for (let i = 0; i < allResults.length; i++) {
         const r = allResults[i];
@@ -183,7 +157,7 @@ module.exports = async function handler(req, res) {
 
           annonces.push({
             adresse: title.substring(0, 80),
-            ville: r._zone || zone1,
+            ville: zone1,
             surface: surface > 0 ? Math.round(surface) : null,
             prix: prix > 0 ? prix : null,
             prix_m2: prix_m2 > 0 ? prix_m2 : null,
@@ -195,76 +169,68 @@ module.exports = async function handler(req, res) {
           continue;
         }
 
-        // Sinon, c'est une page qui peut contenir PLUSIEURS annonces : on segmente
-        // le texte autour de chaque prix trouvé, qu'il y ait du HTML ou pas.
-        if (seenUrls[url]) continue;
+        // Sinon, c'est probablement une page de liste : extraire les annonces individuelles du HTML brut
+        let foundIndividual = false;
+        for (let p = 0; p < annoncePatterns.length; p++) {
+          annoncePatterns[p].lastIndex = 0;
+          let m;
+          let count = 0;
+          while ((m = annoncePatterns[p].exec(rawContent)) !== null && count < 5) {
+            const annonceUrl = m[1];
+            if (seenUrls[annonceUrl]) continue;
+            seenUrls[annonceUrl] = true;
+            foundIndividual = true;
+            count++;
 
-        const prices = findAllPrices(rawContent);
+            const pos = m.index;
+            const prix = extractPriceNear(rawContent, pos, 400);
+            const surface = extractSurfaceNear(rawContent, pos, 400, surfMin);
+            if (prix === 0 && surface === 0) continue;
 
-        let source = 'Web';
-        if (urlLower.includes('seloger.com')) source = 'SeLoger';
-        else if (urlLower.includes('leboncoin.fr')) source = 'LeBonCoin';
-        else if (urlLower.includes('bienici.com')) source = 'Bienici';
-        else if (urlLower.includes('logic-immo.com')) source = 'Logic-Immo';
-        else if (urlLower.includes('etreproprio.com')) source = 'EtreProprio';
-        else if (urlLower.includes('superimmo.com')) source = 'SuperImmo';
+            const prix_m2 = (prix > 0 && surface > 0) ? Math.round(prix / surface) : 0;
+            let source = 'Web';
+            if (annonceUrl.includes('seloger.com')) source = 'SeLoger';
+            else if (annonceUrl.includes('leboncoin.fr')) source = 'LeBonCoin';
+            else if (annonceUrl.includes('bienici.com')) source = 'Bienici';
+            else if (annonceUrl.includes('logic-immo.com')) source = 'Logic-Immo';
 
-        if (prices.length === 0) {
-          // Pas de prix du tout sur cette page : on tente quand même via surface + titre,
-          // en dernier recours, pour ne pas perdre l'info si elle existe ailleurs.
+            annonces.push({
+              adresse: 'Annonce ' + source + ' (' + zone1 + ')',
+              ville: zone1,
+              surface: surface > 0 ? Math.round(surface) : null,
+              prix: prix > 0 ? prix : null,
+              prix_m2: prix_m2 > 0 ? prix_m2 : null,
+              type: 'Appartement',
+              source: source,
+              description: rawContent.substring(Math.max(0, pos - 100), pos + 200),
+              lien: annonceUrl
+            });
+          }
+        }
+
+        // Si aucune annonce individuelle trouvée dans cette page, on garde la page elle-même en dernier recours
+        if (!foundIndividual && !seenUrls[url]) {
+          seenUrls[url] = true;
+          const prix = extractPriceNear(title + ' ' + rawContent, 0, 500);
           const surface = extractSurfaceNear(title + ' ' + rawContent, 0, 500, surfMin);
-          if (surface > 0) {
-            seenUrls[url] = true;
+          if (prix > 0 || surface > 0) {
+            const prix_m2 = (prix > 0 && surface > 0) ? Math.round(prix / surface) : 0;
+            let source = 'Web';
+            if (urlLower.includes('seloger.com')) source = 'SeLoger';
+            else if (urlLower.includes('etreproprio.com')) source = 'EtreProprio';
+            else if (urlLower.includes('superimmo.com')) source = 'SuperImmo';
             annonces.push({
               adresse: title.substring(0, 80),
-              ville: r._zone || zone1,
-              surface: Math.round(surface),
-              prix: null,
-              prix_m2: null,
+              ville: zone1,
+              surface: surface > 0 ? Math.round(surface) : null,
+              prix: prix > 0 ? prix : null,
+              prix_m2: prix_m2 > 0 ? prix_m2 : null,
               type: 'Appartement',
               source: source,
               description: rawContent.substring(0, 250),
               lien: url
             });
           }
-          continue;
-        }
-
-        seenUrls[url] = true;
-        const maxPerPage = 5;
-        for (let pIdx = 0; pIdx < Math.min(prices.length, maxPerPage); pIdx++) {
-          const priceHit = prices[pIdx];
-          const prix = priceHit.value;
-          const surface = extractSurfaceNear(rawContent, priceHit.index, 350, surfMin);
-          const prix_m2 = (prix > 0 && surface > 0) ? Math.round(prix / surface) : 0;
-
-          const segStart = Math.max(0, priceHit.index - 150);
-          const segEnd = Math.min(rawContent.length, priceHit.index + 250);
-          const segment = rawContent.substring(segStart, segEnd);
-          const segmentLower = segment.toLowerCase();
-
-          let type = 'Appartement';
-          if (segmentLower.includes('bureau')) type = 'Bureau';
-          else if (segmentLower.includes('commerce') || segmentLower.includes('local commercial')) type = 'Commerce';
-          else if (segmentLower.includes('maison')) type = 'Maison';
-          else if (segmentLower.includes('loft') || segmentLower.includes('duplex')) type = 'Atypique';
-
-          // Adresse approximative : on prend le segment juste avant le prix, nettoyé
-          let adresseGuess = segment.substring(0, Math.min(120, priceHit.index - segStart)).trim();
-          adresseGuess = adresseGuess.replace(/\s+/g, ' ').split('.').pop().trim();
-          if (!adresseGuess || adresseGuess.length < 4) adresseGuess = title.substring(0, 80);
-
-          annonces.push({
-            adresse: adresseGuess.substring(0, 80),
-            ville: r._zone || zone1,
-            surface: surface > 0 ? Math.round(surface) : null,
-            prix: prix,
-            prix_m2: prix_m2 > 0 ? prix_m2 : null,
-            type: type,
-            source: source,
-            description: segment.substring(0, 250),
-            lien: url
-          });
         }
       }
 
