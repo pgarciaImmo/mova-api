@@ -1,5 +1,3 @@
-{}
-
 // Cron job déclenché automatiquement par Vercel (voir vercel.json à la racine du repo)
 // 2 fois par jour. Réutilise EXACTEMENT la même logique de recherche que api/claude.js
 // (via le module partagé api/lib/chasseur.js), pour ne jamais désynchroniser les deux.
