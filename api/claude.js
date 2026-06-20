@@ -21,18 +21,24 @@ module.exports = async function handler(req, res) {
 
       const TAVILY_KEY = process.env.TAVILY_API_KEY;
 
+      // Mots-clés de décote : présents dans TOUTES les requêtes, peu importe le type de bien.
+      // Avant, ce signal n'était utilisé qu'une requête sur deux (alterné avec kwAtypique),
+      // ce qui veut dire que la requête "maison" ne cherchait JAMAIS "rénover/succession/..."
+      // et que la requête "atypique" pouvait remonter des biens déjà rénovés et chers sans
+      // aucun filtre de décote — contraire à l'objectif (Paulo n'achète que pour marge).
       const kwRenovation = 'rénover OR travaux OR succession OR liquidation OR rafraîchir OR restructurer OR squatté OR vétusté OR indivision OR mutation';
-      const kwAtypique = 'atypique OR loft OR duplex OR hôtel OR commercialité OR immeuble OR bureau OR atelier OR Haussmannien OR entrepôt OR commerce OR mur commercial OR local commercial';
+      // Mots-clés de type de bien atypique/commercial : utilisés UNIQUEMENT pour élargir le type
+      // de bien recherché, jamais comme substitut au signal de décote ci-dessus.
+      const kwAtypiqueType = 'atypique OR loft OR duplex OR hôtel OR commercialité OR Haussmannien OR atelier';
 
       const zones = zonesRaw.split(',').map(function(z) { return z.trim(); }).filter(Boolean);
       const zone1 = zones[0] || 'Paris 16e';
 
-      // Pour chaque zone demandée, on lance 3 requêtes (appartement / maison / bien commercial)
-      // plutôt qu'une seule requête par zone. Avant, une seule requête par zone forçait un choix
-      // de type de bien par zone (donc certaines zones ne voyaient jamais de maison, par ex.) ;
-      // ici chaque zone est couverte sur les 3 familles, quitte à faire plus de requêtes Tavily.
+      // Pour chaque zone demandée, on lance 3 requêtes (appartement / maison / bien commercial).
+      // CHAQUE requête combine désormais type de bien ET signal de décote (kwRenovation),
+      // pour ne jamais remonter un bien déjà rénové et donc sans marge possible.
       const bienTerms = [
-        'appartement',
+        'appartement OR ' + kwAtypiqueType,
         'maison',
         'bureau OR local commercial OR commerce OR entrepôt OR immeuble'
       ];
@@ -40,8 +46,7 @@ module.exports = async function handler(req, res) {
       const queryZones = [];
       for (let zi = 0; zi < zones.length; zi++) {
         for (let bi = 0; bi < bienTerms.length; bi++) {
-          const kw = (bi % 2 === 0) ? kwRenovation : kwAtypique;
-          queries.push(zones[zi] + ' ' + bienTerms[bi] + ' vente achat annonce ' + kw);
+          queries.push(zones[zi] + ' ' + bienTerms[bi] + ' vente achat annonce ' + kwRenovation);
           queryZones.push(zones[zi]);
         }
       }
