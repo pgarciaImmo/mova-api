@@ -30,9 +30,11 @@ module.exports = async function handler(req, res) {
       // Une requête par zone demandée (alterne rénovation/atypique pour varier les résultats),
       // au lieu de toujours cibler seulement les 2 premières zones.
       const queries = [];
+      const queryZones = [];
       for (let zi = 0; zi < zones.length; zi++) {
         const kw = (zi % 2 === 0) ? kwRenovation : kwAtypique;
         queries.push(zones[zi] + ' appartement vente achat annonce ' + kw);
+        queryZones.push(zones[zi]);
       }
 
       const allResults = [];
@@ -51,7 +53,10 @@ module.exports = async function handler(req, res) {
             })
           });
           const tData = await tRes.json();
-          if (tData.results) allResults.push(...tData.results);
+          if (tData.results) {
+            tData.results.forEach(function(r) { r._zone = queryZones[q]; });
+            allResults.push(...tData.results);
+          }
         } catch (e) {}
       }
 
@@ -64,7 +69,7 @@ module.exports = async function handler(req, res) {
           const title = (item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/) || [])[1] || '';
           const link = (item.match(/<link>(.*?)<\/link>/) || [])[1] || '';
           const desc = (item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/) || [])[1] || '';
-          if (title && link) allResults.push({ title: title, url: link, content: desc, isIndividual: true });
+          if (title && link) allResults.push({ title: title, url: link, content: desc, isIndividual: true, _zone: zone1 });
         });
       } catch (e) {}
 
@@ -178,7 +183,7 @@ module.exports = async function handler(req, res) {
 
           annonces.push({
             adresse: title.substring(0, 80),
-            ville: zone1,
+            ville: r._zone || zone1,
             surface: surface > 0 ? Math.round(surface) : null,
             prix: prix > 0 ? prix : null,
             prix_m2: prix_m2 > 0 ? prix_m2 : null,
@@ -212,7 +217,7 @@ module.exports = async function handler(req, res) {
             seenUrls[url] = true;
             annonces.push({
               adresse: title.substring(0, 80),
-              ville: zone1,
+              ville: r._zone || zone1,
               surface: Math.round(surface),
               prix: null,
               prix_m2: null,
@@ -251,7 +256,7 @@ module.exports = async function handler(req, res) {
 
           annonces.push({
             adresse: adresseGuess.substring(0, 80),
-            ville: zone1,
+            ville: r._zone || zone1,
             surface: surface > 0 ? Math.round(surface) : null,
             prix: prix,
             prix_m2: prix_m2 > 0 ? prix_m2 : null,
