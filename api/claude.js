@@ -21,8 +21,8 @@ module.exports = async function handler(req, res) {
 
       const TAVILY_KEY = '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';
 
-      const kwRenovation = 'rénover OR travaux OR succession OR liquidation OR rafraîchir OR restructurer OR squatté';
-      const kwAtypique = 'atypique OR loft OR duplex OR hôtel OR commercialité OR immeuble OR bureau OR atelier OR Haussmannien';
+      const kwRenovation = 'rénover OR travaux OR succession OR liquidation OR rafraîchir OR restructurer OR squatté OR vétusté OR indivision OR mutation';
+      const kwAtypique = 'atypique OR loft OR duplex OR hôtel OR commercialité OR immeuble OR bureau OR atelier OR Haussmannien OR entrepôt OR commerce OR mur commercial OR local commercial';
 
       const zones = zonesRaw.split(',').map(function(z) { return z.trim(); }).filter(Boolean);
       const zone1 = zones[0] || 'Paris 16e';
