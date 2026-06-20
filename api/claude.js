@@ -165,9 +165,17 @@ module.exports = async function handler(req, res) {
           }
         }
         found.sort(function(a, b) { return a.index - b.index; });
+        // Dédup : fusionne les occurrences proches en position OU de même valeur proche.
+        // Avant, seule la proximité de position (<5 caractères) était testée — insuffisant
+        // sur les pages de listing où le même prix apparaît 2 fois (une fois dans le texte
+        // alternatif markdown de l'image ![Maison ... 3 250 000 €], une fois dans le texte
+        // normal "3 250 000 € 6 579 €/m²"), à 50-150 caractères d'écart, créant des doublons.
         const dedup = [];
         for (let i = 0; i < found.length; i++) {
-          if (dedup.length === 0 || found[i].index - dedup[dedup.length - 1].index > 5) {
+          const prev = dedup[dedup.length - 1];
+          const isCloseByPosition = prev && (found[i].index - prev.index <= 5);
+          const isSameValueNearby = prev && (found[i].value === prev.value) && (found[i].index - prev.index <= 200);
+          if (!prev || (!isCloseByPosition && !isSameValueNearby)) {
             dedup.push(found[i]);
           }
         }
@@ -289,12 +297,37 @@ module.exports = async function handler(req, res) {
         for (let pIdx = 0; pIdx < Math.min(prices.length, maxPerPage); pIdx++) {
           const priceHit = prices[pIdx];
           const prix = priceHit.value;
-          const surface = extractSurfaceNear(rawContent, priceHit.index, 350, surfMin);
+
+          // Borne commune : sur les vraies pages de listing (vérifié sur SeLoger), la
+          // structure réelle est : Type → pièces/chambres/surface → ville → PRIX → description.
+          // Type ET surface apparaissent donc AVANT le prix, jamais après (la description qui
+          // suit le prix appartient à la même annonce mais ne répète pas ces infos, et lire
+          // après le prix risque de capturer le titre/surface de l'annonce SUIVANTE par erreur).
+          // On élargit vers l'avant (jusqu'à 600 caractères) sans jamais remonter avant la fin
+          // du prix précédent, pour ne pas capturer les infos d'une autre annonce sur la page.
+          const prevPriceEnd = pIdx > 0 ? (prices[pIdx - 1].index + prices[pIdx - 1].length) : 0;
+          const beforeWindowStart = Math.max(0, priceHit.index - 600, prevPriceEnd);
+          const beforeWindow = rawContent.substring(beforeWindowStart, priceHit.index);
+
+          const surfaceMatch = beforeWindow.match(/(\d{1,4}(?:[,\.]\d{1,2})?)\s*m[²2]/);
+          let surface = 0;
+          if (surfaceMatch) {
+            const val = parseFloat(surfaceMatch[1].replace(',', '.'));
+            if (val >= surfMin && val <= 5000) surface = val;
+          }
+          // Fallback : si rien trouvé avant le prix, on tente une petite fenêtre après
+          // (certaines annonces individuelles, hors listing, mettent la surface après le prix).
+          if (surface === 0) {
+            surface = extractSurfaceNear(rawContent, priceHit.index, 150, surfMin);
+          }
+
           const prix_m2 = (prix > 0 && surface > 0) ? Math.round(prix / surface) : 0;
 
           const segStart = Math.max(0, priceHit.index - 150);
           const segEnd = Math.min(rawContent.length, priceHit.index + 250);
           const segment = rawContent.substring(segStart, segEnd);
+
+          const typeWindow = beforeWindow;
 
           // Nettoyage : retire syntaxe markdown d'image ![alt](url), URLs brutes,
           // et chemins de fichiers (catalog/images/...), qui polluent l'extraction d'adresse.
@@ -310,18 +343,33 @@ module.exports = async function handler(req, res) {
             .replace(/[*"]/g, ' ')
             .replace(/\s+/g, ' ')
             .trim();
-          const segmentLower = segmentClean.toLowerCase();
 
-          // Détection de type : priorité à "appartement"/"maison" explicites,
-          // car "commerce" ou "bureau" peuvent apparaître par bruit (mentions d'honoraires, etc.)
+          // Détection de type : on cherche le DERNIER mot de typologie dans la fenêtre
+          // (le plus proche du prix), pas le premier. Le début de la fenêtre peut encore
+          // contenir la fin de la DESCRIPTION de l'annonce précédente (qui suit son propre
+          // prix), laquelle peut mentionner "maison"/"appartement" sans rapport avec l'annonce
+          // courante. Le titre de l'annonce courante, lui, est toujours juste avant son prix.
+          function lastMatchIndex(regex, str) {
+            let lastIdx = -1, m;
+            const re = new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : regex.flags + 'g');
+            while ((m = re.exec(str)) !== null) lastIdx = m.index;
+            return lastIdx;
+          }
           let type = 'Appartement';
-          if (/\bmaison\b/.test(segmentLower)) type = 'Maison';
-          else if (/\b(loft|duplex)\b/.test(segmentLower) && !/\bappartement\b/.test(segmentLower)) type = 'Atypique';
-          else if (/\bappartement\b/.test(segmentLower)) type = 'Appartement';
-          else if (/\bbureau(x)?\b/.test(segmentLower)) type = 'Bureau';
-          else if (/\b(local commercial|commerce)\b/.test(segmentLower)) type = 'Commerce';
-          else if (/\b(entrepôt|entrepot)\b/.test(segmentLower)) type = 'Entrepôt';
-          else if (/\bimmeuble\b/.test(segmentLower)) type = 'Immeuble';
+          const typeChecks = [
+            ['Maison', /\bmaison\b/i],
+            ['Atypique', /\b(loft|duplex)\b/i],
+            ['Appartement', /\bappartement\b/i],
+            ['Bureau', /\bbureau(x)?\b/i],
+            ['Commerce', /\b(local commercial|commerce)\b/i],
+            ['Entrepôt', /\b(entrepôt|entrepot)\b/i],
+            ['Immeuble', /\bimmeuble\b/i]
+          ];
+          let bestIdx = -1;
+          for (let tc = 0; tc < typeChecks.length; tc++) {
+            const idx = lastMatchIndex(typeChecks[tc][1], typeWindow);
+            if (idx > bestIdx) { bestIdx = idx; type = typeChecks[tc][0]; }
+          }
 
           // L'adresse extraite du texte brut autour du prix est peu fiable (slugs d'URL,
           // résidus markdown, troncatures). Le titre de la page est une source bien plus
